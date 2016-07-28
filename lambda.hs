@@ -1,11 +1,11 @@
 {-
 
-  Lazy lambda-calculus interpreter for evaluating
-  lambda-terms step by step
+  Lazy lambda-calculus interpreter for showing step-by-step
+  evaluation of lambda-terms.
 
 -}
 
-module Interpreter where
+module Lambda where
 
 data Expr = Var Char
           | Abs Char Expr
@@ -30,31 +30,9 @@ eval (Sub e1 e2 c) = case (eval e1) of
   (App e3 e4) -> App (Sub e3 e2 c) (Sub e4 e2 c)
   (Abs h b)   -> Abs h (Sub b e2 c)
 
-
 evalFull x = do
   putStrLn $ (stringify x) ++ "\t"  ++ (show x)
   let y = eval x in 
     if x == y
       then putStrLn "terminated"
       else evalFull y
-      
-    
-
-testVar = eval (Var 'c')
-
-tests =
-  [ ("testVar", testVar, Var 'c') 
-  --, ("testVar", testVar, Var 'c')
-  ]
-
-run = filter isJust $ 
-  map (\ (name, test, out) -> 
-    if test == out 
-      then Nothing 
-      else (Just name)) 
-  tests
- 
-isJust :: Maybe a -> Bool
-isJust mb = case mb of
-  (Just k) -> True
-  otherwise -> False
