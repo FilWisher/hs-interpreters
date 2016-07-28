@@ -12,7 +12,7 @@ data Expr = Var Char
           | App Expr Expr
           | Sub Expr Expr Char
           deriving (Show, Eq)
- 
+
 stringify :: Expr -> String
 stringify (Var x) = [x]
 stringify (Abs h b) = "(\\" ++ [h] ++ "." ++ (stringify b) ++ ")"
