@@ -1,71 +1,64 @@
 {-
 
   Lazy lambda-mu calculus interpreter for showing step-by-step
-  evaluation of lambda-mu terms
+  evaluation of lambda-mu terms. Following Steffen van Bakel's
+  interpretation of Parigot's original calculus.
 
 -}
 
 module Mu where
 
-data NExp = NExp Char Expr
+type LVar = Char
+type MVar = Char
+
+data Named = Named MVar Expr
   deriving (Show, Eq)
 
-data Expr = Var Char
-          | Abs Char Expr
-          | App Expr Expr
-          | Sub Expr Expr Char
-          | Mu Char NExp
-          deriving (Show, Eq)
-
-stringify :: Expr -> String
-stringify (Var x) = [x]
-stringify (Abs h b) = mconcat ["(\\", [h], ".", stringify b, ")"]
-stringify (App m n) = mconcat [stringify m, stringify n]
-stringify (Sub e1 e2 c) = mconcat [stringify e1, "[", stringify e2, "/", [c], "]"]
-
-stringify (Mu v exp) = case exp of
-  (NExp a exp') -> mconcat ["m", [v], ".[", [a], "]", (stringify exp')]
-
-test = stringify $ Mu 'a' (NExp 'a' (Var 'x'))
-
-eval = flip evalMap []
-
--- TODO: write tests for lamda-mu terms
--- TODO: complete rewrite rules of (Sub ...)
--- TODO: does mu application skip explicit substitution step?
-evalMap :: Expr -> [(Char, Expr)] -> Expr
-evalMap (Var x) es   = (Var x)
-evalMap (App m n) es = case (eval m) of
-  (Abs x e) -> Sub e (evalMap n es) x
-  (Mu v nexp) -> case nexp of 
-      (NExp l exp) -> Mu v $ evalNamed (NExp l $ evalMap exp ((v, n):es)) ((v, n):es)
-  e -> App m (evalMap n es)
-evalMap (Abs h b) es = (Abs h b)
-evalMap (Mu c nexp) es = case nexp of
-  (NExp _ (Var x)) -> Var x 
-  otherwise        -> (Mu c nexp)
---eval (Sub e1 e2 c) = case (eval e1) of
---  (Var a)     -> if a == c then (eval e2) else (Var a)
---  (App e3 e4) -> App (Sub e3 e2 c) (Sub e4 e2 c)
---  (Abs h b)   -> Abs h (Sub b e2 c)
-
---evalNamed :: NExp -> [(Char, Expr)] -> NExp
-evalNamed (NExp n exp) es =
-  if len == 0
-    then (NExp n exp)
-    else (NExp n $ loop exp list)
-  where list = map snd $ filter (\(x, y) -> (n==x)) es
-        len  = length list
-        loop e [] = e
-        loop e l =
-          loop (App e $ head l) (tail l)
-
--- evalMap ((Mu v exp), es) = evalMap
+data Expr = Var LVar
+  | Abs LVar Expr 
+  | App Expr Expr
+  --    m   [ x  /  y ]
+  | Sub Expr Expr LVar
+  | MSub Expr Expr MVar
+  | Mu MVar Named
+  deriving (Show, Eq)
   
 
---evalFull x = do
---  putStrLn $ (stringify x) ++ "\t"  ++ (show x)
---  let y = eval x in 
---    if x == y
---      then putStrLn "terminated"
---      else evalFull y
+stringExpr :: Expr -> String
+stringExpr (Var x) = [x]
+stringExpr (Abs h b) = mconcat ["(\\", [h], ".", stringExpr b, ")"]
+stringExpr (App m n) = mconcat [stringExpr m, stringExpr n]
+stringExpr (Sub e1 e2 c) = mconcat [stringExpr e1, "[", stringExpr e2, "/", [c], "]"]
+stringExpr (MSub e1 e2 a) = mconcat [stringExpr e1, "[ [", [a], "]m'", stringExpr e2, "/[", [a], "]m' ]"]
+stringExpr (Mu n nex) = mconcat ["m", [n], ".", stringNamed nex]
+
+stringNamed :: Named -> String
+stringNamed (Named n ex) = mconcat ["[", [n], "]", stringExpr ex]
+
+-- TODO: define app for msubs
+
+eval :: Expr -> Expr
+eval (Var x) = (Var x)
+
+eval (App (Abs x m) n) = Sub m n x
+eval (App (Mu alpha (Named beta m)) n) = Mu alpha (Named beta (MSub m n alpha))
+
+eval (Sub (Var m) y x) = if m == x then y else (Var m)
+eval (Sub (App m n) y x) = App (Sub m y x) (Sub n y x)
+eval (Sub (Abs h m) y x) = Abs h (Sub m y x)
+eval (Sub (Mu alpha (Named beta m)) y x) = Mu alpha (Named beta (Sub m y x))
+
+eval (MSub (Var m) _ _) = (Var m)
+eval (MSub (Abs x m) n alpha) = Abs x (MSub m n alpha)
+eval (MSub (App x y) n alpha) = App (MSub x n alpha) (MSub y n alpha)
+eval (MSub (Mu delta (Named alpha m)) n gamma) = 
+  if gamma == alpha
+    then Mu delta (Named alpha (App (MSub m n alpha) n))
+    else Mu delta (Named alpha (MSub m n alpha))
+
+evalFull x = do
+  putStrLn $ (stringExpr x) ++ "\t"  ++ (show x)
+  let y = eval x in 
+    if x == y
+      then putStrLn "terminated"
+      else evalFull y
