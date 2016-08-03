@@ -29,7 +29,7 @@ stringExpr (Var x) = [x]
 stringExpr (Abs h b) = mconcat ["(\\", [h], ".", stringExpr b, ")"]
 stringExpr (App m n) = mconcat [stringExpr m, stringExpr n]
 stringExpr (Sub e1 e2 c) = mconcat [stringExpr e1, "[", stringExpr e2, "/", [c], "]"]
-stringExpr (MSub e1 e2 a) = mconcat [stringExpr e1, "[ [", [a], "]m'", stringExpr e2, "/[", [a], "]m' ]"]
+stringExpr (Msub e1 e2 a) = mconcat [stringExpr e1, "[ [", [a], "]m'", stringExpr e2, "/[", [a], "]m' ]"]
 stringExpr (Mu n nex) = mconcat ["m", [n], ".", stringNamed nex]
 
 stringNamed :: Named -> String
