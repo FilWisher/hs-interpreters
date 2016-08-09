@@ -31,10 +31,10 @@ prettify (Val v) = case v of
   Prompt i -> show i
 
 prettify (App m n) = mconcat [ prettify m, prettify n ]
-prettify NewPrompt = "newPrompt"
-prettify (PushPrompt e1 e2) = mconcat ["pushPrompt", prettify e1, prettify e2]
-prettify (WithSubCont e1 e2) = mconcat ["withSubCont", prettify e1, prettify e2]
-prettify (PushSubCont e1 e2) = mconcat ["pushSubCont", prettify e1, prettify e2]
+prettify NewPrompt = " np"
+prettify (PushPrompt e1 e2) = mconcat ["(pp ", prettify e1, " ", prettify e2, ")"]
+prettify (WithSubCont e1 e2) = mconcat ["(wsc ", prettify e1, " ", prettify e2, ")"]
+prettify (PushSubCont e1 e2) = mconcat ["(psc ", prettify e1, " ", prettify e2, ")"]
 prettify Hole = "_"
 prettify (Seq es) = foldr (++) "" $ intersperse ":" $ map prettify es
 
@@ -50,7 +50,7 @@ prettify (Return d v) = prettify filled
           PushSubCont Hole e -> PushSubCont v e
 
 prettifyState :: State -> String
-prettifyState (State e d es q) = mconcat ["(", prettify e, ", ", prettify d, if (length es) == 0 then ", [], " else ", E, ", prettify (Val q), ")"]
+prettifyState (State e d es q) = mconcat ["(", prettify e, ", ", prettify d, if (length es) == 0 then ", [], " else ", E, ", prettify (Val q), ")" ]
 
 data State = State Expr Expr [Expr] Value
   deriving (Show, Eq)
@@ -58,23 +58,29 @@ data State = State Expr Expr [Expr] Value
 -- TODO: resolve overlapping cases
 eval :: State -> State
 eval (State (App e e') d es q) = case e of
-  Val v -> case e of 
+  Val v -> case e' of 
     Val _ -> case v of (Abs x e) -> State (Sub e e' x) d es q
-    otherwise -> State e' (Return d (App e Hole)) es q
+    otherwise -> case d of
+      Hole -> State e' (App e Hole) es q
+      otherwise -> State e' (Return d (App e Hole)) es q
   otherwise -> State e (Return d (App Hole e')) es q
-
---eval (State (App (Val (Abs x e)) v) d es q) = State (Sub e v x) d es q
 
 
 eval (State (PushPrompt e e') d es q) = case e of
   Val _ -> State e' Hole (e:d:es) q
-  otherwise -> State e (Return d (PushPrompt Hole e')) es q
+  otherwise -> case d of
+    Hole -> State e (PushPrompt Hole e') es q
+    otherwise -> State e (Return d (PushPrompt Hole e')) es q
 
 eval (State (WithSubCont e e') d es q) = case e of
-  Val _ -> case e' of
-    Val v -> case v of (Prompt p) -> State (App e' (Seq (d:(splitBefore p es)))) Hole (splitAfter p es) q
-    otherwise -> State e' (Return d (WithSubCont e Hole)) es q
-  otherwise -> State e (Return d (WithSubCont Hole e')) es q
+  Val v -> case e' of
+    Val _ -> case v of (Prompt p) -> State (App e' (Seq (d:(splitBefore p es)))) Hole (splitAfter p es) q
+    otherwise -> case d of 
+      Hole -> State e' (WithSubCont e Hole) es q
+      otherwise -> State e' (Return d (WithSubCont e Hole)) es q
+  otherwise -> case d of
+    Hole -> State e (WithSubCont Hole e') es q
+    otherwise -> State e (Return d (WithSubCont Hole e')) es q
     
 eval (State (PushSubCont e e') d es q) = case e of
   Val _ -> case e of (Seq s) -> State e Hole (s++(d:es)) q
@@ -136,3 +142,10 @@ es = State (Val (Var 'y')) Hole [(App (Val (Abs 'x' (Val (Var 'x')))) Hole)] (Pr
 es' = State (Val (Abs 'y' (Val (Var 'y')))) Hole [(App Hole (Val (Var 'x')))] (Prompt 0)
 es'' = State (Val (Abs 'y' (Val (Var 'y')))) Hole [(App Hole (Val (Abs 'x' (Val (Var 'x'))))),(App Hole (Val (Var 'z')))] (Prompt 0)
 
+-- TODO: raise substitution so it completes before continuing evaluation
+-- TODO: fix non-exhaustive patterns that break here
+wsc = State (App (Val (Abs 'a' (PushPrompt (Val (Var 'a')) (WithSubCont (Val (Var 'a')) (Val (Abs 'k' (Val (Var 'x'))))) )))
+            NewPrompt) Hole [] (Prompt 0)
+
+wsc' = State (App (Val (Abs 'a' (PushPrompt (Val (Var 'a')) (App (WithSubCont (Val (Var 'a')) (Val (Abs 'k' (Val (Var 'x'))))) (Val (Var 'z'))))))
+            NewPrompt) Hole [] (Prompt 0)
