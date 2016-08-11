@@ -30,7 +30,7 @@ prettify (Val v) = case v of
   Abs h m -> mconcat [ "(\\", [h], ".", prettify m, ")" ]
   Prompt i -> show i
 
-prettify (App m n) = mconcat [ prettify m, prettify n ]
+prettify (App m n) = mconcat ["(", prettify m, prettify n, ")" ]
 prettify NewPrompt = " np"
 prettify (PushPrompt e1 e2) = mconcat ["(pp ", prettify e1, " ", prettify e2, ")"]
 prettify (WithSubCont e1 e2) = mconcat ["(wsc ", prettify e1, " ", prettify e2, ")"]
@@ -55,14 +55,38 @@ prettifyState (State e d es q) = mconcat ["(", prettify e, ", ", prettify d, if 
 data State = State Expr Expr [Expr] Value
   deriving (Show, Eq)
 
+shiftContext :: State -> Expr -> State
+shiftContext (State e d es q) d' = case d of
+  Hole -> (State e d' es q)
+  otherwise -> (State e (Return d d') es q)
+  
+contextToAbs :: Expr -> Expr 
+contextToAbs e = (Val (Abs fresh body))
+  where fresh = 'x'  -- TODO: generate truly fresh var
+        body = ret e (Val (Var fresh))
+
+ret :: Expr -> Expr -> Expr
+ret d e = case d of
+  Hole -> e
+  App m n -> App (ret m e) (ret n e)
+  Val (Abs x m) -> Val $ Abs x (ret m e)
+  PushPrompt m n -> PushPrompt (ret m e) (ret n e)
+  WithSubCont m n -> WithSubCont (ret m e) (ret n e)
+  PushSubCont m n -> PushSubCont (ret m e) (ret n e)
+  otherwise -> d
+
+seqToAbs :: [Expr] -> Expr
+seqToAbs es = contextToAbs $ foldr ret Hole $ reverse es
+  
+exprs = [(App Hole (Val (Var 's'))), (App (Val (Var 't')) Hole), App (Val (Var 'u')) Hole]
+app = seqToAbs exprs
+
 -- TODO: resolve overlapping cases
 eval :: State -> State
 eval (State (App e e') d es q) = case e of
   Val v -> case e' of 
     Val _ -> case v of (Abs x e) -> State (Sub e e' x) d es q
-    otherwise -> case d of
-      Hole -> State e' (App e Hole) es q
-      otherwise -> State e' (Return d (App e Hole)) es q
+    otherwise -> shiftContext (State e' d es q) (App e Hole)
   otherwise -> State e (Return d (App Hole e')) es q
 
 
@@ -72,28 +96,29 @@ eval (State (PushPrompt e e') d es q) = case e of
     Hole -> State e (PushPrompt Hole e') es q
     otherwise -> State e (Return d (PushPrompt Hole e')) es q
 
+--eval (State (WithSubCont e e') d es q) = case e of
+--  Val v ->
+--  otherwise -> State e
+
 eval (State (WithSubCont e e') d es q) = case e of
   Val v -> case e' of
     Val _ -> case v of (Prompt p) -> State (App e' (Seq (d:(splitBefore p es)))) Hole (splitAfter p es) q
-    otherwise -> case d of 
-      Hole -> State e' (WithSubCont e Hole) es q
-      otherwise -> State e' (Return d (WithSubCont e Hole)) es q
-  otherwise -> case d of
-    Hole -> State e (WithSubCont Hole e') es q
-    otherwise -> State e (Return d (WithSubCont Hole e')) es q
+    otherwise -> shiftContext (State e' d es q) (WithSubCont e Hole)
+  otherwise -> shiftContext (State e d es q) (WithSubCont Hole e')
     
 eval (State (PushSubCont e e') d es q) = case e of
   Val _ -> case e of (Seq s) -> State e Hole (s++(d:es)) q
   otherwise -> State e (Return d (PushSubCont Hole e')) es q
-    
+
+
 eval (State (Sub (Val (Var m)) v x) d es q) = State (if m == x then v else (Val (Var m))) d es q
-eval (State (Sub (App m n) y x) d es q) = State (App (Sub m y x) (Sub n y x)) d es q
-eval (State (Sub (Val (Abs h m)) y x) d es q) = State (Val (Abs h (Sub m y x))) d es q
+eval (State (Sub (Val (Abs h m)) y x) d es q) = State (Val (Abs h (sub m y x))) d es q
+eval (State (Sub (App m n) y x) d es q) = State (App (sub m y x) (sub n y x)) d es q
 eval (State (Sub (Val (Prompt p)) y x) d es q) = State (Val (Prompt p)) d es q
 eval (State (Sub NewPrompt y x) d es q) = State NewPrompt d es q
-eval (State (Sub (PushPrompt e1 e2) y x) d es q) = State (PushPrompt (Sub e1 y x) (Sub e2 y x)) d es q
-eval (State (Sub (WithSubCont e1 e2) y x) d es q) = State (WithSubCont (Sub e1 y x) (Sub e2 y x)) d es q
-eval (State (Sub (PushSubCont e1 e2) y x) d es q) = State (PushSubCont (Sub e1 y x) (Sub e2 y x)) d es q
+eval (State (Sub (PushPrompt e1 e2) y x) d es q) = State (PushPrompt (sub e1 y x) (sub e2 y x)) d es q
+eval (State (Sub (WithSubCont e1 e2) y x) d es q) = State (WithSubCont (sub e1 y x) (sub e2 y x)) d es q
+eval (State (Sub (PushSubCont e1 e2) y x) d es q) = State (PushSubCont (sub e1 y x) (sub e2 y x)) d es q
 
 eval (State NewPrompt d es (Prompt p)) = State (Val (Prompt p)) d es (Prompt $ p+1)
 
@@ -115,6 +140,19 @@ eval (State (Return d' v) d es q) = State filled d es q
           WithSubCont Hole e -> WithSubCont v e
           WithSubCont e Hole -> WithSubCont e v
           PushSubCont Hole e -> PushSubCont v e
+          
+eval (State (Seq s) d es q) = State (seqToAbs s) d es q
+     
+sub :: Expr -> Expr -> Char -> Expr
+sub m v x = case m of
+  Val (Var n) -> if n == x then v else m
+  Val (Abs y e) -> Val (Abs y $ sub e v x)
+  Val (Prompt p) -> Val (Prompt p)
+  App e e' -> App (sub e v x) (sub e' v x)
+  NewPrompt -> NewPrompt
+  PushPrompt e e' -> PushPrompt (sub e v x) (sub e' v x)
+  WithSubCont e e' -> WithSubCont (sub e v x) (sub e' v x)
+  PushSubCont e e' -> PushSubCont (sub e v x) (sub e' v x)
    
 promptMatch :: Int -> Expr -> Bool
 promptMatch i p = case p of
