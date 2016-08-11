@@ -39,15 +39,7 @@ prettify Hole = "_"
 prettify (Seq es) = foldr (++) "" $ intersperse ":" $ map prettify es
 
 prettify (Sub e1 e2 c) = mconcat [ prettify e1, "[", prettify e2, "/", [c], "]" ]
-prettify (Return d v) = prettify filled
-  where filled = case d of
-          Hole -> v
-          (App Hole e) -> App v e
-          (App e Hole) -> App e v
-          PushPrompt Hole e -> PushPrompt v e
-          WithSubCont Hole e -> WithSubCont v e
-          WithSubCont e Hole -> WithSubCont e v
-          PushSubCont Hole e -> PushSubCont v e
+prettify (Return d v) = prettify $ ret d v
 
 prettifyState :: State -> String
 prettifyState (State e d es q) = mconcat ["(", prettify e, ", ", prettify d, if (length es) == 0 then ", [], " else ", E, ", prettify (Val q), ")" ]
@@ -131,15 +123,7 @@ eval (State (Val v) d es q) = case d of
     otherwise -> State (Val v) d es q
   otherwise -> State (Return d (Val v)) Hole es q
 
-eval (State (Return d' v) d es q) = State filled d es q
-  where filled = case d' of
-          Hole -> v
-          App Hole e -> App v e
-          App e Hole -> App e v
-          PushPrompt Hole e -> PushPrompt v e
-          WithSubCont Hole e -> WithSubCont v e
-          WithSubCont e Hole -> WithSubCont e v
-          PushSubCont Hole e -> PushSubCont v e
+eval (State (Return d' v) d es q) = State (ret d' v) d es q
           
 eval (State (Seq s) d es q) = State (seqToAbs s) d es q
      
@@ -180,8 +164,6 @@ es = State (Val (Var 'y')) Hole [(App (Val (Abs 'x' (Val (Var 'x')))) Hole)] (Pr
 es' = State (Val (Abs 'y' (Val (Var 'y')))) Hole [(App Hole (Val (Var 'x')))] (Prompt 0)
 es'' = State (Val (Abs 'y' (Val (Var 'y')))) Hole [(App Hole (Val (Abs 'x' (Val (Var 'x'))))),(App Hole (Val (Var 'z')))] (Prompt 0)
 
--- TODO: raise substitution so it completes before continuing evaluation
--- TODO: fix non-exhaustive patterns that break here
 wsc = State (App (Val (Abs 'a' (PushPrompt (Val (Var 'a')) (WithSubCont (Val (Var 'a')) (Val (Abs 'k' (Val (Var 'x'))))) )))
             NewPrompt) Hole [] (Prompt 0)
 
