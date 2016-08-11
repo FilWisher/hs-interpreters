@@ -1,6 +1,3 @@
---{-# LANGUAGE DataKinds, GADTs, KindSignatures #-}
---{-# LANGUAGE StandaloneDeriving #-}
-
 module DCC where 
 
 import Data.List
@@ -23,13 +20,13 @@ data Expr = Val Value
   | Sub Expr Expr Char
   deriving (Show, Eq)
 
+data State = State Expr Expr [Expr] Value
+  deriving (Show, Eq)
+
 prettify :: Expr -> String
-
-prettify (Val v) = case v of
-  Var c -> [c]
-  Abs h m -> mconcat [ "(\\", [h], ".", prettify m, ")" ]
-  Prompt i -> show i
-
+prettify (Val (Var c)) = [c]
+prettify (Val (Abs h m)) = mconcat [ "(\\", [h], ".", prettify m, ")" ]
+prettify (Val (Prompt i)) = show i
 prettify (App m n) = mconcat ["(", prettify m, prettify n, ")" ]
 prettify NewPrompt = " np"
 prettify (PushPrompt e1 e2) = mconcat ["(pp ", prettify e1, " ", prettify e2, ")"]
@@ -37,26 +34,24 @@ prettify (WithSubCont e1 e2) = mconcat ["(wsc ", prettify e1, " ", prettify e2, 
 prettify (PushSubCont e1 e2) = mconcat ["(psc ", prettify e1, " ", prettify e2, ")"]
 prettify Hole = "_"
 prettify (Seq es) = foldr (++) "" $ intersperse ":" $ map prettify es
-
 prettify (Sub e1 e2 c) = mconcat [ prettify e1, "[", prettify e2, "/", [c], "]" ]
 prettify (Return d v) = prettify $ ret d v
 
 prettifyState :: State -> String
 prettifyState (State e d es q) = mconcat ["(", prettify e, ", ", prettify d, if (length es) == 0 then ", [], " else ", E, ", prettify (Val q), ")" ]
 
-data State = State Expr Expr [Expr] Value
-  deriving (Show, Eq)
-
-shiftContext :: State -> Expr -> State
-shiftContext (State e d es q) d' = case d of
-  Hole -> (State e d' es q)
-  otherwise -> (State e (Return d d') es q)
-  
+-- create abstractions from context e.g
+-- D[] -> (\x.D[x])
 contextToAbs :: Expr -> Expr 
 contextToAbs e = (Val (Abs fresh body))
   where fresh = 'x'  -- TODO: generate truly fresh var
         body = ret e (Val (Var fresh))
 
+-- replace hole of first expr with second expr e.g
+-- D [] -> [] C -> D ([] C)
+-- final expr should one hole (on condition that first
+-- and second have one hole each). if first expr has
+-- no hole, first expr is returned
 ret :: Expr -> Expr -> Expr
 ret d e = case d of
   Hole -> e
@@ -67,20 +62,21 @@ ret d e = case d of
   PushSubCont m n -> PushSubCont (ret m e) (ret n e)
   otherwise -> d
 
+-- fold sequence of terms with holes into abs with one argument e.g
+-- [] M : N [] : O [] -> \x. O (N (x M)
+-- in effect, this produces an abstraction that when applied to a value
+-- v has the effect of returning v to the continuation represented
+-- by the sequence
 seqToAbs :: [Expr] -> Expr
 seqToAbs es = contextToAbs $ foldr ret Hole $ reverse es
-  
-exprs = [(App Hole (Val (Var 's'))), (App (Val (Var 't')) Hole), App (Val (Var 'u')) Hole]
-app = seqToAbs exprs
 
--- TODO: resolve overlapping cases
+-- reduction rules
 eval :: State -> State
 eval (State (App e e') d es q) = case e of
   Val v -> case e' of 
     Val _ -> case v of (Abs x e) -> State (Sub e e' x) d es q
-    otherwise -> shiftContext (State e' d es q) (App e Hole)
+    otherwise -> State e' (ret d (App e Hole)) es q
   otherwise -> State e (Return d (App Hole e')) es q
-
 
 eval (State (PushPrompt e e') d es q) = case e of
   Val _ -> State e' Hole (e:d:es) q
@@ -88,33 +84,30 @@ eval (State (PushPrompt e e') d es q) = case e of
     Hole -> State e (PushPrompt Hole e') es q
     otherwise -> State e (Return d (PushPrompt Hole e')) es q
 
---eval (State (WithSubCont e e') d es q) = case e of
---  Val v ->
---  otherwise -> State e
-
 eval (State (WithSubCont e e') d es q) = case e of
   Val v -> case e' of
     Val _ -> case v of (Prompt p) -> State (App e' (Seq (d:(splitBefore p es)))) Hole (splitAfter p es) q
-    otherwise -> shiftContext (State e' d es q) (WithSubCont e Hole)
-  otherwise -> shiftContext (State e d es q) (WithSubCont Hole e')
+    otherwise -> State e' (ret d (WithSubCont e Hole)) es q 
+  otherwise -> State e (ret d (WithSubCont Hole e')) es q 
     
 eval (State (PushSubCont e e') d es q) = case e of
   Val _ -> case e of (Seq s) -> State e Hole (s++(d:es)) q
   otherwise -> State e (Return d (PushSubCont Hole e')) es q
 
-
-eval (State (Sub (Val (Var m)) v x) d es q) = State (if m == x then v else (Val (Var m))) d es q
-eval (State (Sub (Val (Abs h m)) y x) d es q) = State (Val (Abs h (sub m y x))) d es q
-eval (State (Sub (App m n) y x) d es q) = State (App (sub m y x) (sub n y x)) d es q
-eval (State (Sub (Val (Prompt p)) y x) d es q) = State (Val (Prompt p)) d es q
-eval (State (Sub NewPrompt y x) d es q) = State NewPrompt d es q
-eval (State (Sub (PushPrompt e1 e2) y x) d es q) = State (PushPrompt (sub e1 y x) (sub e2 y x)) d es q
-eval (State (Sub (WithSubCont e1 e2) y x) d es q) = State (WithSubCont (sub e1 y x) (sub e2 y x)) d es q
-eval (State (Sub (PushSubCont e1 e2) y x) d es q) = State (PushSubCont (sub e1 y x) (sub e2 y x)) d es q
+eval (State (Sub e y x) d es q) = State e' d es q
+  where e' = case e of
+          Val (Var m) -> if m == x then y else (Val (Var m))
+          Val (Abs h m) -> Val (Abs h (sub m y x))
+          App m n -> App (sub m y x) (sub n y x)
+          Val (Prompt p) -> Val (Prompt p)
+          NewPrompt -> NewPrompt
+          PushPrompt e1 e2 -> PushPrompt (sub e1 y x) (sub e2 y x)
+          WithSubCont e1 e2 -> WithSubCont (sub e1 y x) (sub e2 y x)
+          PushSubCont e1 e2 -> PushSubCont (sub e1 y x) (sub e2 y x)
 
 eval (State NewPrompt d es (Prompt p)) = State (Val (Prompt p)) d es (Prompt $ p+1)
 
--- explicit returning
+-- returning values to contexts
 eval (State (Val v) d es q) = case d of
   Hole -> case es of
     (e:es') -> case e of
@@ -124,9 +117,11 @@ eval (State (Val v) d es q) = case d of
   otherwise -> State (Return d (Val v)) Hole es q
 
 eval (State (Return d' v) d es q) = State (ret d' v) d es q
-          
 eval (State (Seq s) d es q) = State (seqToAbs s) d es q
-     
+
+-- replace all occurences in m of x with v
+-- m[v/x] e.g
+-- M x -> y -> x -> M y
 sub :: Expr -> Expr -> Char -> Expr
 sub m v x = case m of
   Val (Var n) -> if n == x then v else m
@@ -137,18 +132,22 @@ sub m v x = case m of
   PushPrompt e e' -> PushPrompt (sub e v x) (sub e' v x)
   WithSubCont e e' -> WithSubCont (sub e v x) (sub e' v x)
   PushSubCont e e' -> PushSubCont (sub e v x) (sub e' v x)
-   
+
+-- utility function for matching prompts
 promptMatch :: Int -> Expr -> Bool
 promptMatch i p = case p of
   (Val (Prompt p')) -> i == p'
   otherwise -> False
   
+-- returns sequence of expressions UP UNTIL prompt p (not incl)
 splitBefore p es = takeWhile (not . promptMatch p) es
+-- returns sequence of expressions FROM prompt p (not incl)
 splitAfter  p es = case length es of
   0 -> []
   otherwise -> tail list
   where list = dropWhile (not . promptMatch p) es
- 
+
+-- evaluates expression to termination (runs interpreter)
 evalFull s = do
   putStrLn $ (prettifyState s) ++ "\t" ++ (show s)
   let s' = eval s in
@@ -156,7 +155,8 @@ evalFull s = do
       putStrLn "terminated"
     else 
       evalFull s'
-      
+
+-- sample data
 vx = State (Val (Var 'x')) Hole [] (Prompt 0)
 np = State NewPrompt Hole [] (Prompt 0)
 ap = State (Val (Var 'y')) (App (Val (Abs 'x' (Val (Var 'x')))) Hole) [] (Prompt 0)
@@ -169,3 +169,7 @@ wsc = State (App (Val (Abs 'a' (PushPrompt (Val (Var 'a')) (WithSubCont (Val (Va
 
 wsc' = State (App (Val (Abs 'a' (PushPrompt (Val (Var 'a')) (App (WithSubCont (Val (Var 'a')) (Val (Abs 'k' (Val (Var 'x'))))) (Val (Var 'z'))))))
             NewPrompt) Hole [] (Prompt 0)
+
+exprs = [(App Hole (Val (Var 's'))), (App (Val (Var 't')) Hole), App (Val (Var 'u')) Hole]
+app = seqToAbs exprs
+
