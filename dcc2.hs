@@ -16,7 +16,6 @@ data Expr = Val Value
   | NewPrompt
   | Seq [Expr]
   
-  | Return Expr Expr
   | Sub Expr Expr Char
   deriving (Show, Eq)
 
@@ -35,7 +34,6 @@ prettify (PushSubCont e1 e2) = mconcat ["(psc ", prettify e1, " ", prettify e2, 
 prettify Hole = "_"
 prettify (Seq es) = foldr (++) "" $ intersperse ":" $ map prettify es
 prettify (Sub e1 e2 c) = mconcat [ prettify e1, "[", prettify e2, "/", [c], "]" ]
-prettify (Return d v) = prettify $ ret d v
 
 prettifyState :: State -> String
 prettifyState (State e d es q) = mconcat ["(", prettify e, ", ", prettify d, if (length es) == 0 then ", [], " else ", E, ", prettify (Val q), ")" ]
@@ -76,13 +74,13 @@ eval (State (App e e') d es q) = case e of
   Val v -> case e' of 
     Val _ -> case v of (Abs x e) -> State (Sub e e' x) d es q
     otherwise -> State e' (ret d (App e Hole)) es q
-  otherwise -> State e (Return d (App Hole e')) es q
+  otherwise -> State e (ret d (App Hole e')) es q
 
 eval (State (PushPrompt e e') d es q) = case e of
   Val _ -> State e' Hole (e:d:es) q
   otherwise -> case d of
     Hole -> State e (PushPrompt Hole e') es q
-    otherwise -> State e (Return d (PushPrompt Hole e')) es q
+    otherwise -> State e (ret d (PushPrompt Hole e')) es q
 
 eval (State (WithSubCont e e') d es q) = case e of
   Val v -> case e' of
@@ -91,8 +89,11 @@ eval (State (WithSubCont e e') d es q) = case e of
   otherwise -> State e (ret d (WithSubCont Hole e')) es q 
     
 eval (State (PushSubCont e e') d es q) = case e of
-  Val _ -> case e of (Seq s) -> State e Hole (s++(d:es)) q
-  otherwise -> State e (Return d (PushSubCont Hole e')) es q
+  -- HACK: When pushing e onto stack, apply to hole to
+  --       counteract premature conversion of context
+  --       into abstraction
+  Val v -> State e' Hole ([App (Val v) Hole]++(d:es)) q
+  otherwise -> State e (ret d (PushSubCont Hole e')) es q
 
 eval (State (Sub e y x) d es q) = State e' d es q
   where e' = case e of
@@ -114,9 +115,8 @@ eval (State (Val v) d es q) = case d of
       (Val (Prompt p)) -> State (Val v) Hole es' q
       otherwise -> State (Val v) e es' q
     otherwise -> State (Val v) d es q
-  otherwise -> State (Return d (Val v)) Hole es q
+  otherwise -> State (ret d (Val v)) Hole es q
 
-eval (State (Return d' v) d es q) = State (ret d' v) d es q
 eval (State (Seq s) d es q) = State (seqToAbs s) d es q
 
 -- replace all occurences in m of x with v
@@ -155,21 +155,59 @@ evalFull s = do
       putStrLn "terminated"
     else 
       evalFull s'
+      
+run s = 
+  let s' = eval s in
+    if s == s' then s else run s'
 
 -- sample data
 vx = State (Val (Var 'x')) Hole [] (Prompt 0)
-np = State NewPrompt Hole [] (Prompt 0)
 ap = State (Val (Var 'y')) (App (Val (Abs 'x' (Val (Var 'x')))) Hole) [] (Prompt 0)
 es = State (Val (Var 'y')) Hole [(App (Val (Abs 'x' (Val (Var 'x')))) Hole)] (Prompt 0)
 es' = State (Val (Abs 'y' (Val (Var 'y')))) Hole [(App Hole (Val (Var 'x')))] (Prompt 0)
 es'' = State (Val (Abs 'y' (Val (Var 'y')))) Hole [(App Hole (Val (Abs 'x' (Val (Var 'x'))))),(App Hole (Val (Var 'z')))] (Prompt 0)
 
-wsc = State (App (Val (Abs 'a' (PushPrompt (Val (Var 'a')) (WithSubCont (Val (Var 'a')) (Val (Abs 'k' (Val (Var 'x'))))) )))
-            NewPrompt) Hole [] (Prompt 0)
-
-wsc' = State (App (Val (Abs 'a' (PushPrompt (Val (Var 'a')) (App (WithSubCont (Val (Var 'a')) (Val (Abs 'k' (Val (Var 'x'))))) (Val (Var 'z'))))))
-            NewPrompt) Hole [] (Prompt 0)
-
 exprs = [(App Hole (Val (Var 's'))), (App (Val (Var 't')) Hole), App (Val (Var 'u')) Hole]
 app = seqToAbs exprs
 
+-- combinators
+i = (Val (Abs 'x' (Val (Var 'x'))))
+k = (Val (Abs 'x' (Val (Abs 'y' (Val (Var 'x'))))))
+s = (Val (Abs 'x' (Val (Abs 'y' (Val (Abs 'z' (App (App (var 'x') (var 'z')) (App (var 'y') (var 'z')))))))))
+
+f = abst 'x' (var 'f')
+
+var :: Char -> Expr
+var = Val . Var 
+abst :: Char -> Expr -> Expr
+abst c = Val . Abs c
+
+wsc :: Expr -> Expr -> Expr
+wsc e e' = WithSubCont e e'
+
+psc :: Expr -> Expr -> Expr
+psc e e' = PushSubCont e e'
+
+np :: Expr
+np = NewPrompt
+
+pp :: Expr -> Expr -> Expr
+pp e e' = PushPrompt e e'
+
+state :: Expr -> State
+state e = State e Hole [] (Prompt 0)
+
+app3 x y z = App (App x y) z
+skk = app3 s k k
+sks = app3 s k s
+
+test0 = evalFull . state $ App (App k (var 'u')) (var 't')
+test1 = evalFull . state $ App skk (var 'u')
+test2 = evalFull . state $ App sks (var 'u')
+
+test3 = evalFull . state $ App (abst 'p' (pp (var 'p') (App (wsc (var 'p') (abst 'a' (App (var 'a') (var 's')))) (var 't')))) np
+test4 = evalFull . state $ App (abst 'p' (pp (var 'p') (App (wsc (var 'p') (abst 'a' (psc (var 'a') (var 's')))) (var 't')))) np
+test5 = evalFull . state $ App (abst 'p' (pp (var 'p') (App (wsc (var 'p') (abst 'a' (App (psc (var 'a') k) (psc (var 'a') f)))) (var 't')))) np
+
+--evalExpr = evalFull . state
+--equality1 e = evalFull i e == evalFull skk e
