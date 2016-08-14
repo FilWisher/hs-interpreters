@@ -94,6 +94,8 @@ eval (State (WithSubCont e e') d es q) = case e of
 -- TODO: this might break if e contains a prompt that
 -- a future operation (withsubcont?) needs access to.
 -- could break some edge cases.
+-- ? when evaling (Seq s), turn into abs if context is
+--   application, otherwise leave as Seq
 eval (State (PushSubCont e e') d es q) = case e of
   -- HACK: When pushing e onto stack, apply to hole to
   --       counteract premature conversion of context
