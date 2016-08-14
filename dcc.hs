@@ -72,7 +72,7 @@ seqToAbs es = contextToAbs $ foldr ret Hole $ reverse es
 eval :: State -> State
 eval (State (App e e') d es q) = case e of
   Val v -> case e' of 
-    Val _ -> case v of (Abs x e) -> State (Sub e e' x) d es q
+    Val _ -> case v of (Abs x m) -> State (Sub m e' x) d es q
     otherwise -> State e' (ret d (App e Hole)) es q
   otherwise -> State e (ret d (App Hole e')) es q
 
@@ -84,10 +84,16 @@ eval (State (PushPrompt e e') d es q) = case e of
 
 eval (State (WithSubCont e e') d es q) = case e of
   Val v -> case e' of
-    Val _ -> case v of (Prompt p) -> State (App e' (Seq (d:(splitBefore p es)))) Hole (splitAfter p es) q
+    Val _ -> case v of (Prompt p) -> State (App e' (Seq (d:beforeP))) 
+                                            Hole afterP q
+                                     where beforeP = splitBefore p es
+                                           afterP = splitAfter p es
     otherwise -> State e' (ret d (WithSubCont e Hole)) es q 
   otherwise -> State e (ret d (WithSubCont Hole e')) es q 
-    
+  
+-- TODO: this might break if e contains a prompt that
+-- a future operation (withsubcont?) needs access to.
+-- could break some edge cases.
 eval (State (PushSubCont e e') d es q) = case e of
   -- HACK: When pushing e onto stack, apply to hole to
   --       counteract premature conversion of context
@@ -106,7 +112,8 @@ eval (State (Sub e y x) d es q) = State e' d es q
           WithSubCont e1 e2 -> WithSubCont (sub e1 y x) (sub e2 y x)
           PushSubCont e1 e2 -> PushSubCont (sub e1 y x) (sub e2 y x)
 
-eval (State NewPrompt d es (Prompt p)) = State (Val (Prompt p)) d es (Prompt $ p+1)
+eval (State NewPrompt d es (Prompt p)) = State (Val (Prompt p)) 
+                                               d es (Prompt $ p+1)
 
 -- returning values to contexts
 eval (State (Val v) d es q) = case d of
